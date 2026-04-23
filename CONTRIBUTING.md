@@ -12,7 +12,7 @@ Thank you for contributing to Varbase Test Recorder.
 6. Open a pull request against the `main` branch.
 
 ```bash
-git clone https://github.com/<your-fork>/varbase-test-recorder.git
+git clone https://github.com/Vardot/varbase-test-recorder.git
 cd varbase-test-recorder
 npm install
 npm start

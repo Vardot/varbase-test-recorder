@@ -49,8 +49,3 @@ Before opening a PR, validate the relevant slice:
 - Keep renderer logic in hooks and components organized by responsibility.
 - Avoid adding dependencies unless they solve a real problem that the current code cannot solve cleanly.
 
-## Reporting Security Issues
-
-Do not open public issues for security-sensitive findings. Instead, report them privately through GitHub Security Advisories:
-
-https://github.com/Vardot/varbase-test-recorder/security/advisories/new

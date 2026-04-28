@@ -34,6 +34,7 @@
     "@electron-forge/maker-squirrel": "^7.4.0",
     "@electron-forge/maker-zip": "^7.4.0",
     "@electron-forge/plugin-vite": "^7.4.0",
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@vitejs/plugin-react": "^4.3.1",
     "electron": "^31.3.1",
     "start": "^5.1.0",

@@ -70,6 +70,11 @@ export default function Browser({ webviewRef, baseUrl, onNavigation, onRecorderA
       const errorCode = event.errorCode;
       const errorDescription = event.errorDescription || 'Unknown error';
       const validatedUrl = event.validatedURL || '';
+      // ERR_ABORTED (-3) is normal during redirects — don't treat as failure
+      if (errorCode === -3) {
+        console.log(`[Browser] did-fail-load: ERR_ABORTED for ${validatedUrl} (redirect in progress)`);
+        return;
+      }
       console.warn(`[Browser] did-fail-load: ${errorCode} ${errorDescription} for ${validatedUrl}`);
       // Notify replay engine so navigateAndWait doesn't hang
       window.dispatchEvent(new CustomEvent('replay-navigation-complete', { detail: { url: null, error: errorDescription, errorCode } }));

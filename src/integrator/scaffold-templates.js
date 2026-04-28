@@ -88,12 +88,19 @@ async function clickSaveButton(page) {
  * Type into CKEditor 5.
  */
 async function typeCKEditor5(page, content) {
+  await page.waitForSelector('.ck-editor__editable', { timeout: 10000 });
   await page.evaluate((text) => {
-    if (window.Drupal && window.Drupal.CKEditor5Instances) {
+    // Primary: Drupal global registry
+    if (window.Drupal && window.Drupal.CKEditor5Instances && window.Drupal.CKEditor5Instances.size > 0) {
       window.Drupal.CKEditor5Instances.forEach(editor => editor.setData(text));
-    } else {
-      throw new Error('CKEditor5 instances not found.');
+      return;
     }
+    // Fallback: standard CKEditor5 DOM property
+    const editables = document.querySelectorAll('.ck-editor__editable');
+    const found = [];
+    editables.forEach(el => { if (el.ckeditorInstance) found.push(el.ckeditorInstance); });
+    if (found.length > 0) { found.forEach(e => e.setData(text)); return; }
+    throw new Error('CKEditor5 instances not found.');
   }, content);
 }
 

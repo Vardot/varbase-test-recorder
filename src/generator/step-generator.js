@@ -104,12 +104,19 @@ export function generateSpecFile(opts) {
   if (needsCKEditor) {
     lines.push(`/** Type into CKEditor 5. */`);
     lines.push(`async function typeCKEditor5(page, content) {`);
+    lines.push(`  await page.waitForSelector('.ck-editor__editable', { timeout: 10000 });`);
     lines.push(`  await page.evaluate((text) => {`);
-    lines.push(`    if (window.Drupal && window.Drupal.CKEditor5Instances) {`);
+    lines.push(`    // Primary: Drupal global registry`);
+    lines.push(`    if (window.Drupal && window.Drupal.CKEditor5Instances && window.Drupal.CKEditor5Instances.size > 0) {`);
     lines.push(`      window.Drupal.CKEditor5Instances.forEach(editor => editor.setData(text));`);
-    lines.push(`    } else {`);
-    lines.push(`      throw new Error('CKEditor5 instances not found.');`);
+    lines.push(`      return;`);
     lines.push(`    }`);
+    lines.push(`    // Fallback: standard CKEditor5 DOM property`);
+    lines.push(`    const editables = document.querySelectorAll('.ck-editor__editable');`);
+    lines.push(`    const found = [];`);
+    lines.push(`    editables.forEach(el => { if (el.ckeditorInstance) found.push(el.ckeditorInstance); });`);
+    lines.push(`    if (found.length > 0) { found.forEach(e => e.setData(text)); return; }`);
+    lines.push(`    throw new Error('CKEditor5 instances not found.');`);
     lines.push(`  }, content);`);
     lines.push(`}`);
     lines.push('');

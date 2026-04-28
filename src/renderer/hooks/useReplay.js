@@ -25,6 +25,7 @@ export function useReplay({ webviewRef, scenarios, actions, activeProfile }) {
   const resumeRef = useRef(null);
   const speedRef = useRef(speed);
   const stopOnFailureRef = useRef(stopOnFailure);
+  const preloadReadyRef = useRef(true);
 
   // Keep refs in sync
   useEffect(() => { speedRef.current = speed; }, [speed]);
@@ -45,6 +46,8 @@ export function useReplay({ webviewRef, scenarios, actions, activeProfile }) {
   // Listen for navigation-complete events from Browser.jsx
   useEffect(() => {
     const handler = (e) => {
+      // A navigation happened — preload needs to re-initialize
+      preloadReadyRef.current = false;
       if (resolveNavigation.current) {
         resolveNavigation.current(e.detail?.url);
         resolveNavigation.current = null;
@@ -57,6 +60,7 @@ export function useReplay({ webviewRef, scenarios, actions, activeProfile }) {
   // Listen for preload-ready events (preload script initialized after page load)
   useEffect(() => {
     const handler = () => {
+      preloadReadyRef.current = true;
       if (resolvePreloadReady.current) {
         resolvePreloadReady.current();
         resolvePreloadReady.current = null;
@@ -123,6 +127,8 @@ export function useReplay({ webviewRef, scenarios, actions, activeProfile }) {
 
   /** Wait for the preload script to signal it's ready after a page navigation. */
   const waitForPreload = useCallback(() => {
+    // Already ready — skip the wait
+    if (preloadReadyRef.current) return Promise.resolve();
     return new Promise((resolve) => {
       const timeout = setTimeout(() => {
         if (resolvePreloadReady.current === wrappedResolve) {
@@ -305,6 +311,11 @@ export function useReplay({ webviewRef, scenarios, actions, activeProfile }) {
       // Check pause
       await checkPause();
       if (abortRef.current) break;
+
+      // If a click-triggered navigation happened, wait for the preload to re-initialize
+      if (!preloadReadyRef.current) {
+        await waitForPreload();
+      }
 
       const result = await executeStep(steps[i], i);
 

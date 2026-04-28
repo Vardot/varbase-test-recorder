@@ -924,7 +924,7 @@ async function executeReplayAction(action) {
     // ── Type ────────────────────────────────────────────────────────
     case 'type': {
       if (action.drupalContext === 'ckeditor5') {
-        return await replayCKEditor(action.value);
+        return await replayCKEditor(action);
       }
       const el = await waitForElement(action, 10000, doc);
       if (!el) return { status: 'failed', error: `Input not found: ${action.selector}` };
@@ -949,7 +949,7 @@ async function executeReplayAction(action) {
 
     // ── CKEditor ────────────────────────────────────────────────────
     case 'type_ckeditor': {
-      return await replayCKEditor(action.value);
+      return await replayCKEditor(action);
     }
 
     // ── Select ──────────────────────────────────────────────────────
@@ -1158,13 +1158,56 @@ async function replayDropbutton(action, targetDoc) {
   return { status: 'failed', error: `Dropbutton action "${action.actionName || action.elementText}" not found` };
 }
 
-async function replayCKEditor(value) {
+async function replayCKEditor(action) {
+  const value = action.value || '';
+
+  // Fast-fail: if there's no CKEditor markup at all on the page, don't poll
+  const hasCKMarkup = document.querySelector('.ck-editor, .ck-editor__editable');
+  const hasDrupalCK = window.Drupal && window.Drupal.CKEditor5Instances;
+  if (!hasCKMarkup && !hasDrupalCK) {
+    return { status: 'failed', error: 'No CKEditor5 found on this page' };
+  }
+
+  // Poll until at least one CKEditor5 instance is initialized (up to 5s)
+  const editors = await new Promise((resolve) => {
+    const start = Date.now();
+    const check = () => {
+      // Primary: Drupal global registry
+      if (window.Drupal && window.Drupal.CKEditor5Instances && window.Drupal.CKEditor5Instances.size > 0) {
+        return resolve([...window.Drupal.CKEditor5Instances.values()]);
+      }
+      // Fallback: standard CKEditor5 DOM property
+      const editables = document.querySelectorAll('.ck-editor__editable');
+      const found = [];
+      editables.forEach(el => { if (el.ckeditorInstance) found.push(el.ckeditorInstance); });
+      if (found.length > 0) return resolve(found);
+
+      if (Date.now() - start > 5000) return resolve(null);
+      setTimeout(check, 200);
+    };
+    check();
+  });
+
+  if (!editors || editors.length === 0) {
+    return { status: 'failed', error: 'CKEditor5 instances not found (timed out waiting for editor)' };
+  }
+
   try {
-    if (window.Drupal && window.Drupal.CKEditor5Instances) {
-      window.Drupal.CKEditor5Instances.forEach(editor => editor.setData(value || ''));
-      return { status: 'passed' };
+    // If we have a selector, try to target the specific editor
+    if (action.selector) {
+      const targetEl = document.querySelector(action.selector);
+      if (targetEl) {
+        const editable = targetEl.closest('.ck-editor__editable') || targetEl.querySelector('.ck-editor__editable');
+        if (editable && editable.ckeditorInstance) {
+          editable.ckeditorInstance.setData(value);
+          highlightElement(editable, true);
+          return { status: 'passed' };
+        }
+      }
     }
-    return { status: 'failed', error: 'CKEditor5 instances not found' };
+    // Fallback: set data on all editors
+    editors.forEach(editor => editor.setData(value));
+    return { status: 'passed' };
   } catch (err) {
     return { status: 'failed', error: `CKEditor error: ${err.message}` };
   }

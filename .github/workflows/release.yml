@@ -65,8 +65,12 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: List release files
-        run: find artifacts -type f | sort
+      - name: Flatten release files
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f \( -name '*.exe' -o -name '*.nupkg' -o -name '*.zip' -o -name '*.deb' -o -name '*.rpm' -o -name '*.dmg' \) -exec cp {} release-assets/ \;
+          echo "=== Release assets ==="
+          ls -lh release-assets/
 
       - name: Determine tag
         id: tag
@@ -93,7 +97,4 @@ jobs:
           body_path: RELEASE.md
           draft: false
           prerelease: ${{ contains(steps.tag.outputs.version, '-') }}
-          files: |
-            artifacts/**/*.exe
-            artifacts/**/*.nupkg
-            artifacts/**/*.zip
+          files: release-assets/*

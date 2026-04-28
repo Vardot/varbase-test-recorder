@@ -79,12 +79,18 @@ jobs:
             echo "version=v0.0.0-dev.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Checkout for release notes
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: RELEASE.md
+          sparse-checkout-cone-mode: false
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.version }}
           name: ${{ steps.tag.outputs.version }}
-          generate_release_notes: true
+          body_path: RELEASE.md
           draft: false
           prerelease: ${{ contains(steps.tag.outputs.version, '-') }}
           files: |

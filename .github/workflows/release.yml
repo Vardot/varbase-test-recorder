@@ -43,14 +43,19 @@ jobs:
       - name: Build installers
         run: npm run make
 
+      - name: Collect release files
+        shell: bash
+        run: |
+          mkdir -p dist
+          find out/make -type f \( -name '*.exe' -o -name '*.nupkg' -o -name '*.zip' \) -exec cp {} dist/ \;
+          echo "=== Built files ==="
+          ls -lh dist/
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: build-${{ matrix.os }}
-          path: |
-            out/make/**/*.exe
-            out/make/**/*.nupkg
-            out/make/**/*.zip
+          name: release-${{ matrix.os }}
+          path: dist/*
           if-no-files-found: error
 
   release:
@@ -62,15 +67,15 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          path: dist
           merge-multiple: true
 
-      - name: Flatten release files
+      - name: List release files
         run: |
-          mkdir -p release-assets
-          find artifacts -type f \( -name '*.exe' -o -name '*.nupkg' -o -name '*.zip' -o -name '*.deb' -o -name '*.rpm' -o -name '*.dmg' \) -exec cp {} release-assets/ \;
-          echo "=== Release assets ==="
-          ls -lh release-assets/
+          echo "=== All downloaded files ==="
+          find dist -type f | sort
+          echo "=== File count ==="
+          find dist -type f | wc -l
 
       - name: Determine tag
         id: tag
@@ -97,4 +102,5 @@ jobs:
           body_path: RELEASE.md
           draft: false
           prerelease: ${{ contains(steps.tag.outputs.version, '-') }}
-          files: release-assets/*
+          files: dist/*
+          fail_on_unmatched_files: true

@@ -1,8 +1,8 @@
-const { ipcMain, dialog } = require('electron');
-const path = require('path');
-const fs = require('fs');
-const archiver = require('archiver');
-const { Writable } = require('stream');
+import { ipcMain, dialog } from 'electron';
+import path from 'path';
+import fs from 'fs';
+import archiver from 'archiver';
+import { Writable } from 'stream';
 
 function registerIpcHandlers() {
   // Save session JSON to disk
@@ -72,4 +72,4 @@ function registerIpcHandlers() {
   });
 }
 
-module.exports = { registerIpcHandlers };
+export { registerIpcHandlers };

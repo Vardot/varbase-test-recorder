@@ -1,8 +1,8 @@
-const { app, BrowserWindow, ipcMain, dialog, session } = require('electron');
-const path = require('path');
-const fs = require('fs');
-const archiver = require('archiver');
-const { execSync } = require('child_process');
+import { app, BrowserWindow, ipcMain, dialog, session } from 'electron';
+import path from 'path';
+import fs from 'fs';
+import archiver from 'archiver';
+import { execSync } from 'child_process';
 import { analyzeTarget, scaffoldProject, placeTestFiles } from '../integrator/integrate.js';
 
 // Handle Squirrel installer events on Windows (production only)

@@ -50,6 +50,12 @@ function getStableId(el) {
   if (el.id) {
     // Skip auto-generated IDs that are too dynamic (contain long hashes)
     if (/^[a-f0-9]{20,}$/i.test(el.id)) return null;
+    // Drupal AJAX adds --randomHash suffixes to IDs (e.g. edit-foo--gZalFTlmsB4)
+    // Strip the suffix and use a prefix selector for stability across page loads
+    const drupalHashMatch = el.id.match(/^(.+)--[A-Za-z0-9]{4,}$/);
+    if (drupalHashMatch) {
+      return `[id^="${drupalHashMatch[1]}"]`;
+    }
     return `#${el.id}`;
   }
   return null;
@@ -194,10 +200,27 @@ function isCKEditor5Area(el) {
     el.closest('.ck-editor') !== null;
 }
 
-function isMediaLibraryButton(el) {
-  const text = (el.textContent || '').toLowerCase().trim();
-  return (el.tagName === 'BUTTON' || el.tagName === 'INPUT') &&
-    (text.includes('add media') || text.includes('select media') || text.includes('insert selected'));
+function isMediaLibraryOpenButton(el) {
+  // Only match the "Add media" / "Select media" open button on the node form — NOT dialog buttons
+  if (el.closest('.ui-dialog')) return false;
+  if (el.classList.contains('media-library-open-button') ||
+      el.classList.contains('js-media-library-open-button') ||
+      (el.name && el.name.includes('media-library-open-button')) ||
+      (el.dataset && el.dataset.drupalSelector && el.dataset.drupalSelector.includes('media-open-button'))) {
+    return true;
+  }
+  if (el.tagName === 'INPUT' && el.type === 'submit') {
+    const val = (el.value || '').toLowerCase();
+    if (val.includes('add media') || val.includes('select media')) return true;
+  }
+  const ancestor = el.closest('.media-library-open-button, .js-media-library-open-button, [data-drupal-selector*="media-open-button"]');
+  if (ancestor && !ancestor.closest('.ui-dialog')) return true;
+  return false;
+}
+
+function isMediaLibraryItemSelect(el) {
+  // Media library item click-to-select in the popup dialog
+  return !!(el.closest('.media-library-item__preview, .js-media-library-item-preview, .js-click-to-select-trigger, .js-click-to-select'));
 }
 
 function isDropbuttonAction(el) {
@@ -223,6 +246,7 @@ function describeAction(action) {
   switch (action.type) {
     case 'click': {
       if (action.drupalContext === 'media-library') return `I click the media library button`;
+      if (action.drupalContext === 'media-library-select') return `I select a media item`;
       if (action.drupalContext === 'dropbutton') return `I click on the "${action.elementText}" option`;
       if (action.drupalContext === 'dialog') return `I click "${action.elementText}" in the dialog`;
       if (action.drupalContext === 'autocomplete') return `I select "${action.elementText}" from autocomplete`;
@@ -265,9 +289,21 @@ function describeAction(action) {
 
 // ─── Event Handlers ──────────────────────────────────────────────────────────
 
+let _lastSentKey = null;
+let _lastSentTime = 0;
+
 function sendAction(action) {
-  action.id = `action_${++actionCounter}_${Date.now()}`;
-  action.timestamp = Date.now();
+  // Deduplicate: skip if same type+selector+drupalContext was sent within 500ms
+  const now = Date.now();
+  const dedupKey = `${action.type}|${action.selector || ''}|${action.drupalContext || ''}`;
+  if (_lastSentKey === dedupKey && (now - _lastSentTime) < 500) {
+    return; // Duplicate — skip
+  }
+  _lastSentKey = dedupKey;
+  _lastSentTime = now;
+
+  action.id = `action_${++actionCounter}_${now}`;
+  action.timestamp = now;
   action.url = window.location.href;
   action.pageTitle = document.title;
 
@@ -301,8 +337,14 @@ function handleClick(e) {
     return;
   }
 
+  // Always capture media library button clicks regardless of element type
+  if (isMediaLibraryOpenButton(el) || isMediaLibraryItemSelect(el)) {
+    // Fall through to the recording logic below
+  }
   // Skip clicks on form input/textarea/select — the subsequent input/change event captures the real action
-  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)) {
+  // But allow submit/button inputs through — those are meaningful click targets (e.g. "Add media")
+  else if (['TEXTAREA', 'SELECT'].includes(el.tagName) ||
+      (el.tagName === 'INPUT' && !['submit', 'button', 'reset'].includes(el.type))) {
     // Record the click target so we can suppress it if a type event follows
     const { selector } = getBestSelector(el);
     lastClickSelector = selector;
@@ -336,11 +378,17 @@ function handleClick(e) {
   };
 
   // Detect Drupal-specific contexts
-  if (isMediaLibraryButton(el)) action.drupalContext = 'media-library';
+  if (isMediaLibraryOpenButton(el)) action.drupalContext = 'media-library';
+  else if (isMediaLibraryItemSelect(el)) action.drupalContext = 'media-library-select';
   else if (isDropbuttonAction(el)) action.drupalContext = 'dropbutton';
   else if (isDialogButton(el)) action.drupalContext = 'dialog';
   else if (isAutocompleteResult(el)) action.drupalContext = 'autocomplete';
   else if (isTabledragHandle(el)) action.drupalContext = 'tabledrag';
+
+  // Skip noise clicks inside dialogs (overlay, backdrop, empty elements)
+  if (action.drupalContext === 'dialog' && !action.elementText) {
+    return;
+  }
 
   // If the click is on a link, track it so we can suppress the redundant navigate event
   if (el.tagName === 'A' || el.closest('a')) {
@@ -418,6 +466,12 @@ function handleInput(e) {
   // If they're still editing the same field, update the pending value
   const { selector, strategy } = getBestSelector(el);
   const isCK = isCKEditor5Area(el);
+
+  // Skip CKEditor input events from the isolated preload context —
+  // CKEditor recording is handled by the main-world polling script
+  // which captures editor.getData() (proper HTML) instead of textContent.
+  if (isCK) return;
+
   const fieldValue = el.value || el.textContent || '';
 
   // If there's a pending action for a DIFFERENT field, flush it first
@@ -772,6 +826,43 @@ window.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('submit', handleSubmit, true);
   document.addEventListener('blur', handleBlur, true);
 
+  // Attach direct click listeners to media library buttons as they appear.
+  // Drupal's AJAX framework may stopPropagation on these, preventing the
+  // document-level capture listener from seeing them.
+  function attachMediaLibraryListeners(root) {
+    // Attach pointerdown listeners to media library buttons.
+    // Drupal AJAX calls stopImmediatePropagation on click, so we use pointerdown
+    // which fires before click and isn't intercepted by Drupal.
+    // Deduplication in sendAction prevents double-recording.
+    const buttons = root.querySelectorAll(
+      '.media-library-open-button, .js-media-library-open-button, ' +
+      'input[name*="media-library-open-button"], ' +
+      '[data-drupal-selector*="media-open-button"]'
+    );
+    buttons.forEach((btn) => {
+      if (btn.__mediaRecorderAttached) return;
+      btn.__mediaRecorderAttached = true;
+      btn.addEventListener('pointerdown', () => {
+        if (!isRecording) return;
+        const { selector, strategy } = getBestSelector(btn);
+        sendAction({
+          type: 'click',
+          selector,
+          selectorStrategy: strategy,
+          useContains: false,
+          elementTag: btn.tagName.toLowerCase(),
+          elementText: btn.value || btn.textContent || 'Add media',
+          labelText: getFieldLabel(btn),
+          drupalContext: 'media-library',
+        });
+      }, true);
+    });
+  }
+  // Run once and on DOM changes
+  attachMediaLibraryListeners(document);
+  const mediaObserver = new MutationObserver(() => attachMediaLibraryListeners(document));
+  mediaObserver.observe(document.body, { childList: true, subtree: true });
+
   // Observe for CKEditor5 instances and attach input listeners
   const observer = new MutationObserver((mutations) => {
     for (const m of mutations) {
@@ -785,6 +876,42 @@ window.addEventListener('DOMContentLoaded', () => {
     }
   });
   observer.observe(document.body, { childList: true, subtree: true });
+
+  // Listen for CKEditor change events from the main world polling script
+  // (injected by Browser.jsx via executeJavaScript). This bridges the context
+  // isolation gap for recording CKEditor5 content changes.
+  let ckDebounceTimer = null;
+  let pendingCKValue = null;
+  window.addEventListener('message', (event) => {
+    if (!isRecording) return;
+    if (event.data && event.data.type === '__ck_editor_change') {
+      const value = event.data.value || '';
+      // Debounce: only send after user stops editing for 800ms
+      pendingCKValue = value;
+      clearTimeout(ckDebounceTimer);
+      ckDebounceTimer = setTimeout(() => {
+        if (pendingCKValue !== null) {
+          // Flush any pending regular type action first
+          if (pendingTypeAction) {
+            clearTimeout(typeDebounceTimer);
+            sendAction(pendingTypeAction);
+            pendingTypeAction = null;
+            pendingTypeSelector = null;
+          }
+          sendAction({
+            type: 'type_ckeditor',
+            selector: '.ck-editor__editable',
+            selectorStrategy: 'css',
+            value: pendingCKValue,
+            labelText: 'Body',
+            elementTag: 'div',
+            drupalContext: 'ckeditor5',
+          });
+          pendingCKValue = null;
+        }
+      }, 800);
+    }
+  });
 
   // Notify host that preload is ready
   ipcRenderer.sendToHost('recorder-ready');
@@ -848,12 +975,14 @@ function findElement(action, targetDoc) {
       const text = (action.selector || action.elementText || '').replace(/\s+/g, ' ').trim().toLowerCase();
       const candidates = doc.querySelectorAll(tag);
       for (const el of candidates) {
-        if (el.textContent.replace(/\s+/g, ' ').trim().toLowerCase().includes(text)) return el;
+        const elText = (el.textContent || el.value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+        if (elText.includes(text)) return el;
       }
       // Broaden: try all clickable elements
       const broader = doc.querySelectorAll('a, button, input[type="submit"], input[type="button"]');
       for (const el of broader) {
-        if (el.textContent.replace(/\s+/g, ' ').trim().toLowerCase().includes(text)) return el;
+        const elText = (el.textContent || el.value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+        if (elText.includes(text)) return el;
       }
       return null;
     }
@@ -868,7 +997,8 @@ function findElement(action, targetDoc) {
     const text = action.elementText.replace(/\s+/g, ' ').trim().toLowerCase();
     const candidates = doc.querySelectorAll('a, button, input[type="submit"], input[type="button"], [role="button"]');
     for (const el of candidates) {
-      if (el.textContent.replace(/\s+/g, ' ').trim().toLowerCase().includes(text)) return el;
+      const elText = (el.textContent || el.value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      if (elText.includes(text)) return el;
     }
   }
   return null;
@@ -902,21 +1032,89 @@ async function executeReplayAction(action) {
       if (action.drupalContext === 'dialog') {
         const btn = await waitForElement({ selector: '.ui-dialog-buttonpane button', elementText: action.elementText }, 10000, doc);
         if (!btn) return { status: 'failed', error: `Dialog button "${action.elementText}" not found` };
-        btn.click();
+        btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+        btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+        btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
         highlightElement(btn, true, doc);
         return { status: 'passed' };
       }
       if (action.drupalContext === 'media-library') {
-        const btn = await waitForElement({ elementText: 'Add media', elementTag: 'button' , selectorStrategy: 'contains', useContains: true, selector: 'Add media' }, 10000, doc);
+        // Find the media library open button using Drupal-specific selectors
+        // The button is an <input type="submit"> with class media-library-open-button
+        const mediaSelectors = [
+          action.selector,
+          '.media-library-open-button',
+          '.js-media-library-open-button',
+          'input[name*="media-library-open-button"]',
+          '[data-drupal-selector*="media-open-button"]',
+        ].filter(Boolean);
+        let btn = null;
+        for (const sel of mediaSelectors) {
+          try {
+            btn = doc.querySelector(sel);
+            if (btn) break;
+          } catch {}
+        }
+        // Fallback: search by value text on input[type="submit"]
+        if (!btn) {
+          const text = (action.elementText || 'Add media').toLowerCase();
+          const inputs = doc.querySelectorAll('input[type="submit"], button');
+          for (const el of inputs) {
+            const elText = (el.value || el.textContent || '').toLowerCase().trim();
+            if (elText.includes(text)) { btn = el; break; }
+          }
+        }
+        if (!btn) {
+          // Wait and retry — button may be rendered via AJAX
+          btn = await new Promise((resolve) => {
+            const start = Date.now();
+            const check = () => {
+              for (const sel of mediaSelectors) {
+                try { const el = doc.querySelector(sel); if (el) return resolve(el); } catch {}
+              }
+              if (Date.now() - start > 10000) return resolve(null);
+              setTimeout(check, 300);
+            };
+            check();
+          });
+        }
         if (!btn) return { status: 'failed', error: 'Media library button not found' };
-        btn.click();
+        btn.scrollIntoView({ block: 'center', behavior: 'instant' });
+        // Drupal AJAX listens on mousedown — a bare .click() won't trigger it
+        btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+        btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+        btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
         highlightElement(btn, true, doc);
+        return { status: 'passed' };
+      }
+      if (action.drupalContext === 'media-library-select') {
+        // Click a media item in the media library dialog to select it
+        let item = null;
+        // Try recorded selector first
+        if (action.selector) {
+          try { item = doc.querySelector(action.selector); } catch {}
+        }
+        // Fallback: find click-to-select items in the media library dialog
+        if (!item) {
+          item = await waitForElement({
+            selector: '.media-library-item__preview input[type="checkbox"], .js-click-to-select-trigger, .js-click-to-select input[type="checkbox"]',
+            selectorStrategy: 'css'
+          }, 10000, doc);
+        }
+        if (!item) return { status: 'failed', error: 'Media library item not found' };
+        item.scrollIntoView({ block: 'center', behavior: 'instant' });
+        item.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+        item.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+        item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        highlightElement(item, true, doc);
         return { status: 'passed' };
       }
       const el = await waitForElement(action, 10000, doc);
       if (!el) return { status: 'failed', error: `Element not found: ${action.selector || action.elementText}` };
       el.scrollIntoView({ block: 'center', behavior: 'instant' });
-      el.click();
+      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+      el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+      el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
       highlightElement(el, true, doc);
       return { status: 'passed' };
     }
@@ -965,7 +1163,35 @@ async function executeReplayAction(action) {
 
     // ── Check / Uncheck ─────────────────────────────────────────────
     case 'check': {
-      const el = await waitForElement(action, 10000, doc);
+      let el = await waitForElement(action, 10000, doc);
+      // Fallback: Drupal dialog checkboxes may have dynamic --hash suffixes in IDs.
+      // Try prefix match or label-based search.
+      if (!el && action.selector) {
+        // Strip --hash suffix and try prefix match
+        const prefixMatch = action.selector.match(/^#(.+?)--[A-Za-z0-9]{4,}$/);
+        if (prefixMatch) {
+          el = await waitForElement({ selector: `[id^="${prefixMatch[1]}"]`, selectorStrategy: 'css' }, 8000, doc);
+        }
+      }
+      if (!el && action.labelText) {
+        // Search checkboxes by their label text
+        const labelText = action.labelText.toLowerCase();
+        const checkboxes = doc.querySelectorAll('input[type="checkbox"]');
+        for (const cb of checkboxes) {
+          const lbl = getFieldLabel(cb);
+          if (lbl && lbl.toLowerCase().includes(labelText)) { el = cb; break; }
+        }
+        // Also try labels in dialog
+        if (!el) {
+          const labels = doc.querySelectorAll('.ui-dialog label, .media-library-widget-modal label');
+          for (const label of labels) {
+            if (label.textContent.toLowerCase().includes(labelText) && label.htmlFor) {
+              const target = doc.getElementById(label.htmlFor);
+              if (target) { el = target; break; }
+            }
+          }
+        }
+      }
       if (!el) return { status: 'failed', error: `Checkbox not found: ${action.selector}` };
       el.scrollIntoView({ block: 'center', behavior: 'instant' });
       const shouldCheck = action.checked !== false;
@@ -1161,56 +1387,28 @@ async function replayDropbutton(action, targetDoc) {
 async function replayCKEditor(action) {
   const value = action.value || '';
 
-  // Fast-fail: if there's no CKEditor markup at all on the page, don't poll
-  const hasCKMarkup = document.querySelector('.ck-editor, .ck-editor__editable');
-  const hasDrupalCK = window.Drupal && window.Drupal.CKEditor5Instances;
-  if (!hasCKMarkup && !hasDrupalCK) {
-    return { status: 'failed', error: 'No CKEditor5 found on this page' };
-  }
+  // CKEditor instances live in the page's main world, which is inaccessible
+  // from the isolated preload context. Ask the host renderer to execute the
+  // CKEditor interaction via webview.executeJavaScript().
+  return new Promise((resolve) => {
+    const requestId = `ck_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-  // Poll until at least one CKEditor5 instance is initialized (up to 5s)
-  const editors = await new Promise((resolve) => {
-    const start = Date.now();
-    const check = () => {
-      // Primary: Drupal global registry
-      if (window.Drupal && window.Drupal.CKEditor5Instances && window.Drupal.CKEditor5Instances.size > 0) {
-        return resolve([...window.Drupal.CKEditor5Instances.values()]);
+    const handler = (_event, result) => {
+      if (result && result.requestId === requestId) {
+        ipcRenderer.removeListener('ckeditor-result', handler);
+        resolve(result);
       }
-      // Fallback: standard CKEditor5 DOM property
-      const editables = document.querySelectorAll('.ck-editor__editable');
-      const found = [];
-      editables.forEach(el => { if (el.ckeditorInstance) found.push(el.ckeditorInstance); });
-      if (found.length > 0) return resolve(found);
-
-      if (Date.now() - start > 5000) return resolve(null);
-      setTimeout(check, 200);
     };
-    check();
+    ipcRenderer.on('ckeditor-result', handler);
+
+    // Timeout after 15s
+    setTimeout(() => {
+      ipcRenderer.removeListener('ckeditor-result', handler);
+      resolve({ status: 'failed', error: 'CKEditor execute timed out' });
+    }, 15000);
+
+    ipcRenderer.sendToHost('ckeditor-execute', { requestId, value, selector: action.selector });
   });
-
-  if (!editors || editors.length === 0) {
-    return { status: 'failed', error: 'CKEditor5 instances not found (timed out waiting for editor)' };
-  }
-
-  try {
-    // If we have a selector, try to target the specific editor
-    if (action.selector) {
-      const targetEl = document.querySelector(action.selector);
-      if (targetEl) {
-        const editable = targetEl.closest('.ck-editor__editable') || targetEl.querySelector('.ck-editor__editable');
-        if (editable && editable.ckeditorInstance) {
-          editable.ckeditorInstance.setData(value);
-          highlightElement(editable, true);
-          return { status: 'passed' };
-        }
-      }
-    }
-    // Fallback: set data on all editors
-    editors.forEach(editor => editor.setData(value));
-    return { status: 'passed' };
-  } catch (err) {
-    return { status: 'failed', error: `CKEditor error: ${err.message}` };
-  }
 }
 
 // Listen for replay commands from the renderer

@@ -93,11 +93,88 @@ export default function Browser({ webviewRef, baseUrl, onNavigation, onRecorderA
         // Dispatch replay result to the useReplay hook
         window.dispatchEvent(new CustomEvent('replay-result', { detail: args[0] }));
       }
+      if (channel === 'ckeditor-execute' && args[0]) {
+        const { requestId, value, selector } = args[0];
+        const escapedValue = (value || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
+        const escapedSelector = (selector || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        // Run CKEditor interaction in the page's main world
+        const script = `
+          (function() {
+            try {
+              var value = '${escapedValue}';
+              // Try Drupal global registry first
+              if (window.Drupal && window.Drupal.CKEditor5Instances && window.Drupal.CKEditor5Instances.size > 0) {
+                var editors = Array.from(window.Drupal.CKEditor5Instances.values());
+                if ('${escapedSelector}') {
+                  var target = document.querySelector('${escapedSelector}');
+                  if (target) {
+                    var editable = target.closest('.ck-editor__editable') || target.querySelector('.ck-editor__editable');
+                    if (editable && editable.ckeditorInstance) {
+                      editable.ckeditorInstance.setData(value);
+                      return { status: 'passed', requestId: '${requestId}' };
+                    }
+                  }
+                }
+                editors.forEach(function(e) { e.setData(value); });
+                return { status: 'passed', requestId: '${requestId}' };
+              }
+              // Fallback: CKEditor5 DOM property on editables
+              var editables = document.querySelectorAll('.ck-editor__editable');
+              var found = [];
+              editables.forEach(function(el) { if (el.ckeditorInstance) found.push(el.ckeditorInstance); });
+              if (found.length > 0) {
+                found.forEach(function(e) { e.setData(value); });
+                return { status: 'passed', requestId: '${requestId}' };
+              }
+              return { status: 'failed', error: 'No CKEditor5 instances found on this page', requestId: '${requestId}' };
+            } catch(err) {
+              return { status: 'failed', error: 'CKEditor error: ' + err.message, requestId: '${requestId}' };
+            }
+          })();
+        `;
+        webview.executeJavaScript(script).then((result) => {
+          webview.send('ckeditor-result', result || { status: 'failed', error: 'No result from CKEditor script', requestId });
+        }).catch((err) => {
+          webview.send('ckeditor-result', { status: 'failed', error: 'executeJavaScript failed: ' + err.message, requestId });
+        });
+      }
       if (channel === 'recorder-ready') {
         // Send current recording state to the new page
         if (recordingState === 'recording') {
           webview.send('set-recording', true);
         }
+        // Inject CKEditor change listener into the page's main world
+        // This is needed because CKEditor5 instances live in the main world
+        // and are invisible from the isolated preload context
+        webview.executeJavaScript(`
+          (function() {
+            if (window.__ckRecorderInjected) return;
+            window.__ckRecorderInjected = true;
+            var lastValues = {};
+            function pollCKEditors() {
+              try {
+                var editors = [];
+                if (window.Drupal && window.Drupal.CKEditor5Instances && window.Drupal.CKEditor5Instances.size > 0) {
+                  editors = Array.from(window.Drupal.CKEditor5Instances.values());
+                } else {
+                  document.querySelectorAll('.ck-editor__editable').forEach(function(el) {
+                    if (el.ckeditorInstance) editors.push(el.ckeditorInstance);
+                  });
+                }
+                editors.forEach(function(editor, idx) {
+                  var data = editor.getData();
+                  var key = 'ck_' + idx;
+                  if (data !== lastValues[key] && data !== '') {
+                    lastValues[key] = data;
+                    // Dispatch a custom event the preload can listen for
+                    window.postMessage({ type: '__ck_editor_change', index: idx, value: data }, '*');
+                  }
+                });
+              } catch(e) {}
+            }
+            setInterval(pollCKEditors, 1000);
+          })();
+        `).catch(() => {});
         // Notify replay engine that the preload is ready for actions
         window.dispatchEvent(new CustomEvent('preload-ready'));
       }

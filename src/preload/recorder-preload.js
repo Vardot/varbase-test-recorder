@@ -624,9 +624,13 @@ function _injectPickOverlayInDoc(doc, isTop) {
   pickOverlay = overlay;
 
   overlay.addEventListener('mousemove', (e) => {
-    overlay.style.pointerEvents = 'none';
+    // Hide all overlay elements so elementFromPoint hits the actual page
+    // (pointer-events:none + elementFromPoint is unreliable on macOS)
+    const overlayEls = doc.querySelectorAll('[data-recorder-overlay]');
+    overlayEls.forEach(el => el.style.display = 'none');
     const target = doc.elementFromPoint(e.clientX, e.clientY);
-    overlay.style.pointerEvents = '';
+    overlayEls.forEach(el => el.style.display = '');
+    highlight.style.display = 'none'; // reset; will be set below if needed
     if (target && !target.dataset.recorderOverlay) {
       const rect = target.getBoundingClientRect();
       const isIframe = target.tagName === 'IFRAME';
@@ -654,9 +658,12 @@ function _injectPickOverlayInDoc(doc, isTop) {
   overlay.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    overlay.style.pointerEvents = 'none';
+    // Hide all overlay elements so elementFromPoint hits the actual page
+    // (pointer-events:none + elementFromPoint is unreliable on macOS)
+    const overlayEls = doc.querySelectorAll('[data-recorder-overlay]');
+    overlayEls.forEach(el => el.style.display = 'none');
     const target = doc.elementFromPoint(e.clientX, e.clientY);
-    overlay.style.pointerEvents = '';
+    overlayEls.forEach(el => el.style.display = '');
     if (!target || target.dataset.recorderOverlay) return;
 
     // If user clicked an iframe, drill into it

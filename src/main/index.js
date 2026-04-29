@@ -36,7 +36,7 @@ function registerIpcHandlers() {
   });
 
   // Export as ZIP — returns buffer to renderer for download
-  ipcMain.handle('export-zip', async (_event, { featureName, featureContent, stepContent, fixtures }) => {
+  ipcMain.handle('export-zip', async (_event, { featureName, specContent, featureContent, stepContent, fixtures }) => {
     const { canceled, filePath } = await dialog.showSaveDialog({
       title: 'Export Test Files',
       defaultPath: `${featureName}.zip`,
@@ -53,11 +53,14 @@ function registerIpcHandlers() {
 
       archive.pipe(output);
 
-      // Add .feature file at root
-      archive.append(featureContent, { name: `${featureName}.feature` });
-
-      // Add step definition inside folder
-      archive.append(stepContent, { name: `${featureName}/${featureName}.js` });
+      if (specContent) {
+        // Playwright mode: single .spec.js file
+        archive.append(specContent, { name: `${featureName}.spec.js` });
+      } else {
+        // Legacy Cypress+Cucumber: .feature + step definition
+        archive.append(featureContent, { name: `${featureName}.feature` });
+        archive.append(stepContent, { name: `${featureName}/${featureName}.js` });
+      }
 
       // Add fixture files if any
       if (fixtures && fixtures.length > 0) {
